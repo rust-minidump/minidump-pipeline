@@ -223,7 +223,8 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
             }
 
             let minidump = minidump.unwrap();
-            let reports = do_minidump_stackwalk(&minidump_stackwalk.installed, &minidump, &env);
+            let reports =
+                do_minidump_stackwalk(&minidump_stackwalk.installed, &minidump, &env, &item);
             if let Err(e) = reports {
                 println!("failed to process test dump! {}", e);
                 test_results.insert(
@@ -438,7 +439,7 @@ fn do_run_app(
     signal: &str,
 ) -> Result<Utf8PathBuf, PipelineError> {
     println!("running app --signal={signal}");
-    let dump_path = env.dump_dir.join("minidump.dmp");
+    let dump_path = env.dump_dir.join(signal).join("minidump.dmp");
 
     let mut task = Command::new(app)
         .arg("--signal")
@@ -472,11 +473,15 @@ fn do_minidump_stackwalk(
     mdsw: &Utf8PathBuf,
     minidump: &Utf8PathBuf,
     env: &BuildEnv,
+    signal: &str,
 ) -> Result<MinidumpStackwalkOutput, PipelineError> {
     println!("running minidump-stackwalk");
-    let json_report = env.report_dir.join("report.json");
-    let human_report = env.report_dir.join("report.human.txt");
-    let logs = env.report_dir.join("report.log.txt");
+    let report_dir = env.report_dir.join(signal);
+    let json_report = report_dir.join("report.json");
+    let human_report = report_dir.join("report.human.txt");
+    let logs = report_dir.join("report.log.txt");
+
+    std::fs::create_dir_all(report_dir)?;
 
     let mut task = Command::new(mdsw)
         .arg("--cyborg")
