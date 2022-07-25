@@ -1,12 +1,3 @@
-run_dir = "runs"
-install_dir = "bin"
-dump_dir = "dumps"
-sym_dir = "syms"
-report_dir = "reports"
-
-
-
-
 [minidump-stackwalk]
 # via crates.io (the default, if version not specified, uses latest):
 # version = "0.11.0"
@@ -42,6 +33,21 @@ report_dir = "reports"
 
 
 
-# This is a hacky dummy entry, don't worry about it
-[app]
-install = false
+[minidumper-test]
+force_build = true
+
+# via crates.io (the default, if version not specified, uses latest):
+# version = "1.0.1"
+
+# via git:
+git = "https://github.com/EmbarkStudios/crash-handling"
+# branch = "mybranch"
+# rev = "6ff595e0e809ab5028bf76d22c4fb036ed4ffa6e"
+# tag = "0.3.1"
+
+# via path:
+# path = "../crash-handling/minidumper-test"
+
+[crash-client]
+force_build = true
+git = "https://github.com/EmbarkStudios/crash-handling"

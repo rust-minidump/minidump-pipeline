@@ -1,0 +1,15 @@
+# A config that assumes you have everything locally checked out
+
+[minidump-stackwalk]
+path = "../rust-minidump/minidump-stackwalk/"
+
+[dump_syms]
+path = "../dump_syms/"
+
+[minidumper-test]
+force_build = true
+path = "../crash-handling/minidumper-test"
+
+[crash-client]
+force_build = true
+path = "../crash-handling/minidumper-test"
