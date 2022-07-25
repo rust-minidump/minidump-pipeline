@@ -1,7 +1,5 @@
 # minidump-pipeline
 
-**(NOTHING TO SEE HERE, YET)**
-
 This project attempts to be a whole-system pipeline demonstrating how to use 
 the various minidump-based crash-reporting tools written in Rust, across the
 entire development pipeline:
@@ -19,8 +17,47 @@ though we're all kind of working together on this stuff.
 > [Don't know what a minidump is? Check out our docs for some background][minidump-ours]!
 
 
+# minidump-pipeline Usage
 
-# Fully Streamlined Workflow (Pay Someone Else)
+When you `cargo run` this repo, it will: 
+
+* build the `futility` example app
+* collect its symbols up with `dump_syms`
+* run the app, which will crash, and produce a minidump with `minidumper`
+* process the minidump with `minidump-stackwalk`
+
+Configuration is done through  `pipeline.toml`. This file can be edited locally,
+or you can make your own config and pass it in with `--config`. You can also specify
+the RUN_NAME with `--run`, which will be useful later.
+
+The most interesting part of the config is `[minidump-stackwalk]` and `[dump_syms]`.
+
+These sections specify how minidump-pipeline will install these two binaries. You can
+either fetch from crates.io, git, or a local path. This lets you easily test out the
+whole pipeline with different toolchains swapped out.
+
+If the tool runs successfully, then under `runs/$RUN_NAME` you will find:
+
+* `syms/` containing the .sym emitted by dump_syms
+* `dumps/` containing the .dmp emitted by minidumper
+* `reports/` containing the processed crash reports (and logs) emitted by minidump-stackwalk
+
+If you do two different runs, you can then diff these results.
+
+
+## TODO
+
+* make it possible to fetch a different `minidumper` (needs `[patch]`?)
+* cleanup `futility` (just replace it with `minidumper-test`?)
+* add "crash suites" to futility so you can get lots of different dumps
+* add test-expectation files in the vein of web-platform-tests
+* integrate socc-pair for diffing two runs?
+* integrate minidump-debugger for inspecting the processed dump?
+* build `fuility` inside of the run dir, so the native artifacts are part of it?
+* make it easier to swap out the rust toolchain `futility` is built with?
+
+
+# Production: Fully Streamlined Workflow (Pay Someone Else)
 
 Just use [sentry.io][]. 
 
@@ -35,7 +72,7 @@ for one of the companies that actually maintains these libraries/applications).
 
 
 
-# Streamlined Workflow
+# Production: Streamlined Workflow
 
 The most streamlined summary of what to do is:
 

@@ -1,0 +1,47 @@
+run_dir = "runs"
+install_dir = "bin"
+dump_dir = "dumps"
+sym_dir = "syms"
+report_dir = "reports"
+
+
+
+
+[minidump-stackwalk]
+# via crates.io (the default, if version not specified, uses latest):
+# version = "0.11.0"
+
+# via git:
+# git = "https://github.com/rust-minidump/rust-minidump"
+# branch = "mybranch"
+# rev = "a525b3fe40495680a5c4984f8d1223963583f894"
+# tag = "0.11.0"
+
+# via path:
+# path = "../rust-minidump/minidump-stackwalk/"
+
+
+
+
+
+[dump_syms]
+# via crates.io (the default, if version not specified, uses latest):
+# version = "1.0.1"
+
+# via git:
+# git = "https://github.com/mozilla/dump_syms"
+# branch = "mybranch"
+# rev = "3977a09ab0aee64d87597da47bb9fdf29ffe82c5"
+# tag = "v1.0.1"
+
+# via path:
+# path = "../dump_syms/"
+
+
+
+
+
+
+# This is a hacky dummy entry, don't worry about it
+[app]
+install = false
