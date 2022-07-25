@@ -16,7 +16,7 @@ Because there are 5 completely different environments and lots of configuration
 you might want to do for each, the ecosystem is covered by various projects, even
 though we're all kind of working together on this stuff.
 
-> [Don't know what a minidump is? Check out our docs for some background][minidump-our]!
+> [Don't know what a minidump is? Check out our docs for some background][minidump-ours]!
 
 
 
