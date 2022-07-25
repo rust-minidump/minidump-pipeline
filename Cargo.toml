@@ -2,7 +2,18 @@
 name = "minidump-pipeline"
 version = "0.1.0"
 edition = "2021"
+exclude = ["/install", "/runs"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+cargo_metadata = "0.15.0"
+clap = { version = "3.2.14", features = ["derive"] }
+miette = "5.1.1"
+serde = { version = "1.0.140", features = ["derive"] }
+thiserror = "1.0.31"
+toml = "0.5.9"
+
+
+[workspace]
+members = ["futility"]
