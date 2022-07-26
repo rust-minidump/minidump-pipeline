@@ -1,15 +1,29 @@
-# A config that assumes you have everything locally checked out
+# A config that builds everything from local paths
 
 [minidump-stackwalk]
+# git = "https://github.com/rust-minidump/rust-minidump"
 path = "../rust-minidump/minidump-stackwalk/"
 
+# optional! (only used when you pass --debugger)
+[minidump-debugger]
+# git = "https://github.com/Gankra/minidump-debugger"
+path = "../minidump-debugger/"
+
 [dump_syms]
+# git = "https://github.com/mozilla/dump_syms"
 path = "../dump_syms/"
+
+
+
+# these two need to be by git because they aren't published
+# and we need to force_build because we want their symbols!
 
 [minidumper-test]
 force_build = true
+git = "https://github.com/EmbarkStudios/crash-handling"
 path = "../crash-handling/minidumper-test"
 
 [crash-client]
 force_build = true
-path = "../crash-handling/minidumper-test"
+git = "https://github.com/EmbarkStudios/crash-handling"
+path = "../crash-handling/minidumper-test/crash-client"

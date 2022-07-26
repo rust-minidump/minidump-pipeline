@@ -1,56 +1,52 @@
-[minidump-stackwalk]
-# via crates.io (the default, if version not specified, uses latest):
-# version = "0.11.0"
+# Pipeline files are passed via --config to minidump-pipeline,
+# with `pipeline.toml` being the implicit default one.
+#
+# These files are basically Cargo.toml dependencies, that minidump-pipeline
+# will use to fetch binaries, either with `cargo install` or `cargo build`.
 
-# via git:
+
+
+# [my-example-dep]
+# # via crates.io (the default, if version not specified, uses latest):
+# version = "1.0.1"
+#
+#
+# # via git (only `git` is required)
 # git = "https://github.com/rust-minidump/rust-minidump"
 # branch = "mybranch"
 # rev = "a525b3fe40495680a5c4984f8d1223963583f894"
 # tag = "0.11.0"
+#
+#
+# # via path (will use cargo build to avoid excessive rebuilds)
+# path = "../rust-minidump/minidump-stackwalk
 
-# via path:
+
+
+[minidump-stackwalk]
+# git = "https://github.com/rust-minidump/rust-minidump"
 # path = "../rust-minidump/minidump-stackwalk/"
 
+# optional! (only used when you pass --debugger)
 [minidump-debugger]
-path = "../minidump-debugger"
-
-
-
+# git = "https://github.com/Gankra/minidump-debugger"
+# path = "../minidump-debugger/"
 
 [dump_syms]
-# via crates.io (the default, if version not specified, uses latest):
-# version = "1.0.1"
-
-# via git:
 # git = "https://github.com/mozilla/dump_syms"
-# branch = "mybranch"
-# rev = "3977a09ab0aee64d87597da47bb9fdf29ffe82c5"
-# tag = "v1.0.1"
-
-# via path:
 # path = "../dump_syms/"
 
 
 
-
-# These are currently pointing to git while we experiment with some stuff
+# these two need to be by git because they aren't published
+# and we need to force_build because we want their symbols!
 
 [minidumper-test]
 force_build = true
-
-# via crates.io (the default, if version not specified, uses latest):
-# version = "1.0.1"
-
-# via git:
-git = "https://github.com/Gankra/crash-handling"
-branch = "bin-minidumper"
-# rev = "6ff595e0e809ab5028bf76d22c4fb036ed4ffa6e"
-# tag = "0.3.1"
-
-# via path:
+git = "https://github.com/EmbarkStudios/crash-handling"
 # path = "../crash-handling/minidumper-test"
 
 [crash-client]
 force_build = true
-git = "https://github.com/Gankra/crash-handling"
-branch = "bin-minidumper"
+git = "https://github.com/EmbarkStudios/crash-handling"
+# path = "../crash-handling/minidumper-test/crash-client"
