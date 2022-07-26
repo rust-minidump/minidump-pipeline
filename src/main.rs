@@ -230,7 +230,7 @@ fn get_test_rules(test: &TestKey, cli: &Cli) -> TestRules {
         return result;
     }
 
-    if cfg!(windows) {
+    if cfg!(target_os = "windows") || cfg!(target_os = "macos") {
         if test.signal == "stack-overflow-c-thread" {
             result.check = Busted;
         }
