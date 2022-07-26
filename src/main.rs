@@ -119,6 +119,8 @@ struct BuildEnv {
     _root_dir: Utf8PathBuf,
     build_dir: Utf8PathBuf,
     install_dir: Utf8PathBuf,
+    /// cargo-install appends /bin to install_dir!
+    real_install_dir: Utf8PathBuf,
     sym_dir: Utf8PathBuf,
     dump_dir: Utf8PathBuf,
     report_dir: Utf8PathBuf,
@@ -277,6 +279,8 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
 
     let env = BuildEnv {
         install_dir: root_dir.join(&config.install_dir),
+        real_install_dir: root_dir.join(&config.install_dir).join("bin"),
+        // This duplication is currently intentional, not sure if this decoupling is useful
         build_dir: root_dir.join(&config.install_dir),
         sym_dir: run_dir.join(&config.sym_dir),
         dump_dir: run_dir.join(&config.dump_dir),
@@ -290,7 +294,9 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
     }
 
     std::fs::create_dir_all(&env.install_dir)?;
+    std::fs::create_dir_all(&env.real_install_dir)?;
     std::fs::create_dir_all(&env.build_dir)?;
+    std::fs::create_dir_all(&env.run_dir)?;
     std::fs::create_dir_all(&env.sym_dir)?;
     std::fs::create_dir_all(&env.dump_dir)?;
     std::fs::create_dir_all(&env.report_dir)?;
@@ -720,7 +726,7 @@ fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<InstallOutput, Pip
                     }
                     let bin = lines.next().unwrap();
                     if bin.trim().starts_with(to_build) {
-                        let path = env.install_dir.join("bin").join(bin.trim());
+                        let path = env.real_install_dir.join(bin.trim());
                         println!("installed {to_build}: {path}");
                         if let Some(orig_bin_path) = &orig_bin_path {
                             println!("preserving {to_build} at {orig_bin_path}");
@@ -738,7 +744,7 @@ fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<InstallOutput, Pip
         // Need to copy the binaries to the install dir
         let orig_bin_path = orig_bin_path.expect("built local but didn't get binary path?!");
         let bin_name = orig_bin_path.file_name().unwrap();
-        let installed = env.install_dir.join("bin").join(bin_name);
+        let installed = env.real_install_dir.join(bin_name);
         std::fs::copy(&orig_bin_path, &installed)?;
         return Ok(InstallOutput {
             installed,
