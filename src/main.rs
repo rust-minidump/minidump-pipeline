@@ -1,9 +1,13 @@
 use cargo_metadata::{camino::Utf8PathBuf, Message};
 use clap::Parser;
 use miette::Diagnostic;
-use serde::Deserialize;
-use std::{fs::File, io::Read, path::PathBuf, process::Command};
+use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, fs::File, io::Read, path::PathBuf, process::Command};
 use thiserror::Error;
+
+////////////////////////////////////////////////////////
+/// Configuration
+////////////////////////////////////////////////////////
 
 #[derive(Diagnostic, Debug, Error)]
 enum PipelineError {
@@ -13,6 +17,10 @@ enum PipelineError {
     FromUtf8(#[from] std::string::FromUtf8Error),
     #[error(transparent)]
     Toml(#[from] toml::de::Error),
+    #[error(transparent)]
+    Json(#[from] serde_json::Error),
+    #[error("some tests failed")]
+    TestsFailed,
     #[error("{0}")]
     Other(String),
 }
@@ -23,35 +31,61 @@ struct Cli {
     config: Option<PathBuf>,
     #[clap(action, long)]
     run: Option<String>,
+    #[clap(action, long)]
+    suite: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct ConfigFile {
+    #[serde(default = "default_run_dir")]
     run_dir: String,
+    #[serde(default = "default_install_dir")]
     install_dir: String,
+    #[serde(default = "default_dump_dir")]
     dump_dir: String,
+    #[serde(default = "default_sym_dir")]
     sym_dir: String,
+    #[serde(default = "default_report_dir")]
     report_dir: String,
 
     #[serde(rename = "minidump-stackwalk")]
     minidump_stackwalk: Dep,
     dump_syms: Dep,
-    app: Dep,
+    #[serde(rename = "minidumper-test")]
+    minidumper_test: Dep,
+    #[serde(rename = "crash-client")]
+    crash_client: Dep,
+}
+
+fn default_run_dir() -> String {
+    "runs".to_string()
+}
+fn default_install_dir() -> String {
+    "bin".to_string()
+}
+fn default_dump_dir() -> String {
+    "dumps".to_string()
+}
+fn default_sym_dir() -> String {
+    "syms".to_string()
+}
+fn default_report_dir() -> String {
+    "reports".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
 struct Dep {
-    features: Option<Vec<String>>,
-    all_features: Option<bool>,
-    no_default_features: Option<bool>,
+    #[serde(default)]
+    force_build: bool,
+    #[serde(default)]
+    features: Vec<String>,
+    #[serde(default)]
+    all_features: bool,
+    #[serde(default)]
+    no_default_features: bool,
 
-    #[serde(default = "default_true")]
-    install: bool,
     #[serde(flatten)]
     kind: DepKind,
-}
-fn default_true() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -91,6 +125,119 @@ struct BuildEnv {
     run_dir: Utf8PathBuf,
 }
 
+/////////////////////////////////////////////////////////
+/// Testing and Reporting
+/////////////////////////////////////////////////////////
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct FullReport {
+    stats: TestStats,
+    builds: BuildReports,
+    syms: SymReports,
+    tests: BTreeMap<String, TestReport>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct TestStats {
+    tests_run: u32,
+    tests_passed: u32,
+    tests_failed: u32,
+    tests_skipped: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct SymReports {
+    minidumper_test: Utf8PathBuf,
+    crash_client: Utf8PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct BuildReports {
+    dump_syms: InstallOutput,
+    minidump_stackwalk: InstallOutput,
+    minidumper_test: InstallOutput,
+    crash_client: InstallOutput,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct TestReport {
+    rules: TestRules,
+    status: TestStatus,
+    dump: Option<Utf8PathBuf>,
+    reports: Option<MinidumpStackwalkOutput>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+enum TestStatus {
+    Skipped,
+    Passed,
+    FailedRun,
+    FailedProcess,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TestKey {
+    signal: String,
+    id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TestRules {
+    run: TestRunMode,
+    check: TestCheckMode,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Serialize, Deserialize)]
+enum TestRunMode {
+    Skip,
+    // Build,
+    Run,
+    Process,
+    // Check,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Serialize, Deserialize)]
+enum TestCheckMode {
+    Pass,
+    Fail,
+    Busted,
+    Random,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MinidumpStackwalkOutput {
+    json_report: Utf8PathBuf,
+    human_report: Utf8PathBuf,
+    logs: Utf8PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct InstallOutput {
+    installed: Utf8PathBuf,
+    orig_bin_path: Option<Utf8PathBuf>,
+}
+
+fn get_test_rules(test: &TestKey, cli: &Cli) -> TestRules {
+    use TestCheckMode::*;
+    use TestRunMode::*;
+
+    let mut result = TestRules {
+        run: Process,
+        check: Pass,
+    };
+    if !cli.suite.is_empty() && !cli.suite.contains(&test.id) {
+        result.run = Skip;
+        return result;
+    }
+
+    if cfg!(windows) {
+        if test.signal == "stack-overflow-c-thread" {
+            result.check = Busted;
+        }
+    }
+    result
+}
+
 fn main() -> Result<(), miette::Report> {
     let cli = parse_cli();
     let config = parse_config(&cli)?;
@@ -123,8 +270,6 @@ fn parse_config(cli: &Cli) -> Result<ConfigFile, PipelineError> {
 }
 
 fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
-    const APP_NAME: &str = "futility";
-
     let root_dir = Utf8PathBuf::from_path_buf(std::env::current_dir()?)
         .map_err(|_| PipelineError::Other("current dir isn't utf8?".to_owned()))?;
     let run_name = cli.run.clone().unwrap_or_else(|| "run".to_owned());
@@ -151,18 +296,156 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
     std::fs::create_dir_all(&env.report_dir)?;
 
     let dump_syms = build("dump_syms", &config.dump_syms, &env)?;
-    let mdsw = build("minidump-stackwalk", &config.minidump_stackwalk, &env)?;
-    let app = build(APP_NAME, &config.app, &env)?;
+    let minidump_stackwalk = build("minidump-stackwalk", &config.minidump_stackwalk, &env)?;
+    let app = build("minidumper-test", &config.minidumper_test, &env)?;
+    let client = build("crash-client", &&config.crash_client, &env)?;
 
     println!();
     println!("artifacts built!");
     println!();
 
-    let _sym = do_dump_syms(&dump_syms, &app, &env)?;
-    let minidump = do_run_app(&app, &env)?;
-    let _report = do_minidump_stackwalk(&mdsw, &minidump, &env);
+    let app_sym = do_dump_syms(
+        &dump_syms.installed,
+        app.orig_bin_path
+            .as_ref()
+            .expect("app must be rebuilt for dump_syms!"),
+        &env,
+    )?;
+    let client_sym = do_dump_syms(
+        &dump_syms.installed,
+        client
+            .orig_bin_path
+            .as_ref()
+            .expect("crash-client must be rebuilt for dump_syms!"),
+        &env,
+    )?;
+    let suite = do_get_suite(&app.installed)?;
 
-    Ok(())
+    let mut test_results = BTreeMap::new();
+    for test in suite {
+        let rules = get_test_rules(&test, cli);
+        let mut report = test_results.entry(test.id.clone()).or_insert(TestReport {
+            rules,
+            status: TestStatus::Passed,
+            dump: None,
+            reports: None,
+        });
+        if report.rules.run <= TestRunMode::Skip {
+            report.status = TestStatus::Skipped;
+            continue;
+        }
+
+        // Ok run the test
+        let minidump = do_run_app(&app.installed, &env, &test);
+        if let Err(e) = minidump {
+            println!("failed to run test! {}", e);
+            report.status = TestStatus::FailedRun;
+            continue;
+        }
+        report.dump = minidump.ok();
+        let minidump = report.dump.as_ref().unwrap();
+
+        if report.rules.run <= TestRunMode::Run {
+            continue;
+        }
+
+        let reports = do_minidump_stackwalk(&minidump_stackwalk.installed, &minidump, &env, &test);
+        if let Err(e) = reports {
+            println!("failed to process test dump! {}", e);
+            report.status = TestStatus::FailedProcess;
+            continue;
+        }
+
+        println!("test passed!");
+        report.reports = reports.ok();
+    }
+    println!();
+    println!("all tests run!");
+    println!();
+
+    let mut tests_skipped = 0;
+    let mut tests_run = 0;
+    let mut tests_passed = 0;
+    let mut tests_failed = 0;
+    for (suite, item) in &test_results {
+        tests_run += 1;
+        print!("{suite:30} ");
+        match (&item.status, &item.rules.check) {
+            (TestStatus::Skipped, _) => {
+                println!("...skipped!");
+                tests_skipped += 1;
+            }
+            (_, TestCheckMode::Random)
+            | (TestStatus::Passed, TestCheckMode::Pass)
+            | (TestStatus::FailedRun | TestStatus::FailedProcess, TestCheckMode::Fail) => {
+                println!("...passed!");
+                tests_passed += 1;
+            }
+            (TestStatus::FailedRun, TestCheckMode::Busted) => {
+                println!("...failed to run! (known busted, treated as pass)");
+                tests_passed += 1;
+            }
+            (TestStatus::FailedProcess, TestCheckMode::Busted) => {
+                println!("...failed to process dump! (known busted, treated as pass)");
+                tests_passed += 1;
+            }
+            (TestStatus::FailedRun, TestCheckMode::Pass) => {
+                println!("...failed to run!");
+                tests_failed += 1;
+            }
+            (TestStatus::FailedProcess, TestCheckMode::Pass) => {
+                println!("...failed to process dump!");
+                tests_failed += 1;
+            }
+            (TestStatus::Passed, TestCheckMode::Busted) => {
+                println!("...got fixed (change the expected to 'pass')!");
+                tests_failed += 1;
+            }
+            (TestStatus::Passed, TestCheckMode::Fail) => {
+                println!("...incorrectly passed!");
+                tests_failed += 1;
+            }
+        }
+    }
+
+    println!();
+    println!(
+        "{tests_run} run, {tests_passed} passed, {tests_failed} failed, {tests_skipped} skipped"
+    );
+    println!();
+
+    let full_report = FullReport {
+        stats: TestStats {
+            tests_run,
+            tests_passed,
+            tests_failed,
+            tests_skipped,
+        },
+        builds: BuildReports {
+            dump_syms,
+            minidump_stackwalk,
+            minidumper_test: app,
+            crash_client: client,
+        },
+        syms: SymReports {
+            minidumper_test: app_sym,
+            crash_client: client_sym,
+        },
+        tests: test_results,
+    };
+
+    let full_report_path = env.run_dir.join("full-report.json");
+    let full_report_file = File::create(&full_report_path)?;
+    serde_json::to_writer_pretty(full_report_file, &full_report)?;
+
+    println!("full report written to: {}", full_report_path);
+    println!();
+
+    if tests_failed > 0 {
+        Err(PipelineError::TestsFailed)
+    } else {
+        Ok(())
+    }
 }
 
 fn do_dump_syms(
@@ -213,12 +496,47 @@ fn do_dump_syms(
     Ok(output_path)
 }
 
-fn do_run_app(app: &Utf8PathBuf, env: &BuildEnv) -> Result<Utf8PathBuf, PipelineError> {
-    println!("running app (TODO)");
-    let dump_path = env.dump_dir.join("minidump.dmp");
+fn do_get_suite(app: &Utf8PathBuf) -> Result<Vec<TestKey>, PipelineError> {
+    println!("getting test suite");
+    let output = Command::new(app).arg("--list").output()?;
+
+    let status = output.status;
+    if !status.success() {
+        return Err(PipelineError::Other(format!(
+            "failed to get suite listing: {}",
+            status.code().unwrap()
+        )));
+    }
+
+    let stdout = String::from_utf8(output.stdout)?;
+    let listing = stdout
+        .lines()
+        .map(|s| TestKey {
+            signal: s.to_owned(),
+            id: s.to_owned(),
+        })
+        .collect::<Vec<_>>();
+    println!("got test suite!");
+    for item in &listing {
+        println!("  {}", item.id);
+    }
+    println!();
+
+    Ok(listing)
+}
+
+fn do_run_app(
+    app: &Utf8PathBuf,
+    env: &BuildEnv,
+    test: &TestKey,
+) -> Result<Utf8PathBuf, PipelineError> {
+    println!("running app --signal={}", test.signal);
+    let dump_path = env.dump_dir.join(format!("{}.dmp", test.id));
 
     let mut task = Command::new(app)
-        .arg("--crash-monitor")
+        .arg("--signal")
+        .arg(&test.signal)
+        .arg("--dump")
         .arg(&dump_path)
         .spawn()?;
 
@@ -236,23 +554,16 @@ fn do_run_app(app: &Utf8PathBuf, env: &BuildEnv) -> Result<Utf8PathBuf, Pipeline
     Ok(dump_path)
 }
 
-#[allow(dead_code)]
-#[derive(Debug)]
-struct MinidumpStackwalkOutput {
-    json_report: Utf8PathBuf,
-    human_report: Utf8PathBuf,
-    logs: Utf8PathBuf,
-}
-
 fn do_minidump_stackwalk(
     mdsw: &Utf8PathBuf,
     minidump: &Utf8PathBuf,
     env: &BuildEnv,
+    test: &TestKey,
 ) -> Result<MinidumpStackwalkOutput, PipelineError> {
     println!("running minidump-stackwalk");
-    let json_report = env.report_dir.join("report.json");
-    let human_report = env.report_dir.join("report.human.txt");
-    let logs = env.report_dir.join("report.log.txt");
+    let json_report = env.report_dir.join(format!("{}.json", test.id));
+    let human_report = env.report_dir.join(format!("{}.human.txt", test.id));
+    let logs = env.report_dir.join(format!("{}.log.txt", test.id));
 
     let mut task = Command::new(mdsw)
         .arg("--cyborg")
@@ -286,16 +597,29 @@ fn do_minidump_stackwalk(
     Ok(output)
 }
 
-fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<Utf8PathBuf, PipelineError> {
+fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<InstallOutput, PipelineError> {
     let mut command = Command::new("cargo");
-    if dep.install {
-        println!("installing {}...", to_build);
-        command.arg("install");
-        command.arg(to_build);
+    println!("installing {}...", to_build);
+
+    let is_install = !matches!(dep.kind, DepKind::Path(_));
+
+    if is_install {
+        command
+            .arg("install")
+            .arg(to_build)
+            .arg("--root")
+            .arg(&env.install_dir)
+            .arg("--target-dir")
+            .arg(&env.build_dir);
+        if dep.force_build {
+            command.arg("--force");
+        }
     } else {
-        println!("building {}...", to_build);
-        command.arg("build");
-        command.current_dir(to_build);
+        command
+            .arg("build")
+            .arg("--release")
+            .arg("--bin")
+            .arg(to_build);
     }
 
     match &dep.kind {
@@ -305,10 +629,15 @@ fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<Utf8PathBuf, Pipel
             }
         }
         DepKind::Path(dep) => {
-            command.arg("--path").arg(&dep.path);
+            if !is_install {
+                command.current_dir(&dep.path);
+            } else {
+                unreachable!("--install with --path is disabled, it sucks");
+            }
         }
         DepKind::Git(dep) => {
             command.arg("--git").arg(&dep.git);
+
             if let Some(branch) = &dep.branch {
                 command.arg("--branch").arg(branch);
             }
@@ -321,27 +650,17 @@ fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<Utf8PathBuf, Pipel
         }
     }
 
-    if let Some(features) = &dep.features {
+    if !dep.features.is_empty() {
         command.arg("--features");
-        for feature in features {
+        for feature in &dep.features {
             command.arg(feature);
         }
     }
-    if let Some(true) = dep.all_features {
+    if dep.all_features {
         command.arg("--all-features");
     }
-    if let Some(true) = dep.no_default_features {
+    if dep.no_default_features {
         command.arg("--no-default-features");
-    }
-
-    if dep.install {
-        command
-            .arg("--root")
-            .arg(&env.install_dir)
-            .arg("--target-dir")
-            .arg(&env.build_dir);
-    } else {
-        command.arg("--target-dir").arg(&env.build_dir);
     }
 
     let mut task = command
@@ -349,14 +668,16 @@ fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<Utf8PathBuf, Pipel
         .stdout(std::process::Stdio::piped())
         .spawn()?;
 
-    let mut bin = None;
+    let mut orig_bin_path = None;
     let reader = std::io::BufReader::new(task.stdout.take().unwrap());
     for message in cargo_metadata::Message::parse_stream(reader) {
         if let Message::CompilerArtifact(artifact) = message.unwrap() {
+            // println!("{}", artifact.target.name);
             if artifact.target.name == to_build {
+                // println!("  {:#?}", artifact);
                 if let Some(executable) = artifact.executable {
                     println!("built {to_build}: {executable}");
-                    bin = Some(executable);
+                    orig_bin_path = Some(executable);
                 }
             }
         }
@@ -370,8 +691,9 @@ fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<Utf8PathBuf, Pipel
         )));
     }
 
-    if dep.install {
-        // We need to slurp the binaries out of --list.
+    if is_install {
+        // We need to slurp the binaries out of --list
+        // and then copy them back to the build dir
         let output = Command::new("cargo")
             .arg("install")
             .arg("--list")
@@ -380,19 +702,48 @@ fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<Utf8PathBuf, Pipel
             .output()?;
 
         let messages = String::from_utf8(output.stdout)?;
-        let mut lines = messages.lines();
+        let mut lines = messages.lines().peekable();
 
-        while let Some(line) = lines.next() {
+        // FORMAT:
+        // dump_syms v0.1.0 (C:\Users\ninte\dev\dump_syms):
+        //    dump_syms.exe
+        // minidump-stackwalk v0.12.0 (C:\Users\ninte\dev\rust-minidump\minidump-stackwalk):
+        //    minidump-stackwalk.exe
+        // minidumper-test v0.1.0 (C:\Users\ninte\dev\crash-handling\minidumper-test):
+        //    crash-client.exe
+        //    minidumper-test.exe
+        'outer: while let Some(line) = lines.next() {
             if line.starts_with(to_build) {
-                if let Some(bin) = lines.next() {
-                    let path = env.install_dir.join("bin").join(bin.trim());
-                    println!("found already installed {to_build}: {path}");
-                    return Ok(path);
+                while let Some(bin) = lines.peek() {
+                    if !bin.starts_with(' ') {
+                        continue 'outer;
+                    }
+                    let bin = lines.next().unwrap();
+                    if bin.trim().starts_with(to_build) {
+                        let path = env.install_dir.join("bin").join(bin.trim());
+                        println!("installed {to_build}: {path}");
+                        if let Some(orig_bin_path) = &orig_bin_path {
+                            println!("preserving {to_build} at {orig_bin_path}");
+                            std::fs::copy(&path, &orig_bin_path)?;
+                        }
+                        return Ok(InstallOutput {
+                            installed: path,
+                            orig_bin_path,
+                        });
+                    }
                 }
             }
         }
-    } else if let Some(bin) = bin {
-        return Ok(bin);
+    } else {
+        // Need to copy the binaries to the install dir
+        let orig_bin_path = orig_bin_path.expect("built local but didn't get binary path?!");
+        let bin_name = orig_bin_path.file_name().unwrap();
+        let installed = env.install_dir.join("bin").join(bin_name);
+        std::fs::copy(&orig_bin_path, &installed)?;
+        return Ok(InstallOutput {
+            installed,
+            orig_bin_path: Some(orig_bin_path),
+        });
     }
 
     Err(PipelineError::Other("failed to find binary!".to_string()))
