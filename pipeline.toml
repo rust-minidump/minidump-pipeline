@@ -31,7 +31,7 @@
 
 
 
-
+# These are currently pointing to git while we experiment with some stuff
 
 [minidumper-test]
 force_build = true
