@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs::File, io::Read, path::PathBuf, process::Command};
 use thiserror::Error;
 
+////////////////////////////////////////////////////////
+/// Configuration
+////////////////////////////////////////////////////////
+
 #[derive(Diagnostic, Debug, Error)]
 enum PipelineError {
     #[error(transparent)]
@@ -66,7 +70,7 @@ fn default_sym_dir() -> String {
     "syms".to_string()
 }
 fn default_report_dir() -> String {
-    "report".to_string()
+    "reports".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -119,6 +123,119 @@ struct BuildEnv {
     dump_dir: Utf8PathBuf,
     report_dir: Utf8PathBuf,
     run_dir: Utf8PathBuf,
+}
+
+/////////////////////////////////////////////////////////
+/// Testing and Reporting
+/////////////////////////////////////////////////////////
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct FullReport {
+    stats: TestStats,
+    builds: BuildReports,
+    syms: SymReports,
+    tests: BTreeMap<String, TestReport>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct TestStats {
+    tests_run: u32,
+    tests_passed: u32,
+    tests_failed: u32,
+    tests_skipped: u32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct SymReports {
+    minidumper_test: Utf8PathBuf,
+    crash_client: Utf8PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct BuildReports {
+    dump_syms: InstallOutput,
+    minidump_stackwalk: InstallOutput,
+    minidumper_test: InstallOutput,
+    crash_client: InstallOutput,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct TestReport {
+    rules: TestRules,
+    status: TestStatus,
+    dump: Option<Utf8PathBuf>,
+    reports: Option<MinidumpStackwalkOutput>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+enum TestStatus {
+    Skipped,
+    Passed,
+    FailedRun,
+    FailedProcess,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TestKey {
+    signal: String,
+    id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TestRules {
+    run: TestRunMode,
+    check: TestCheckMode,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Serialize, Deserialize)]
+enum TestRunMode {
+    Skip,
+    // Build,
+    Run,
+    Process,
+    // Check,
+}
+
+#[derive(Debug, Clone, PartialEq, PartialOrd, Eq, Ord, Serialize, Deserialize)]
+enum TestCheckMode {
+    Pass,
+    Fail,
+    Busted,
+    Random,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MinidumpStackwalkOutput {
+    json_report: Utf8PathBuf,
+    human_report: Utf8PathBuf,
+    logs: Utf8PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct InstallOutput {
+    installed: Utf8PathBuf,
+    orig_bin_path: Option<Utf8PathBuf>,
+}
+
+fn get_test_rules(test: &TestKey, cli: &Cli) -> TestRules {
+    use TestCheckMode::*;
+    use TestRunMode::*;
+
+    let mut result = TestRules {
+        run: Process,
+        check: Pass,
+    };
+    if !cli.suite.is_empty() && !cli.suite.contains(&test.id) {
+        result.run = Skip;
+        return result;
+    }
+
+    if cfg!(windows) {
+        if test.signal == "stack-overflow-c-thread" {
+            result.check = Busted;
+        }
+    }
+    result
 }
 
 fn main() -> Result<(), miette::Report> {
@@ -205,74 +322,87 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
     let suite = do_get_suite(&app.installed)?;
 
     let mut test_results = BTreeMap::new();
-    let mut tests_skipped = 0;
-    for item in suite {
-        if cli.suite.is_empty() || cli.suite.contains(&item) {
-            let minidump = do_run_app(&app.installed, &env, &item);
-            if let Err(e) = minidump {
-                println!("failed to run test! {}", e);
-                test_results.insert(
-                    item,
-                    TestReport {
-                        status: TestStatus::FailedRun,
-                        dump: None,
-                        reports: None,
-                    },
-                );
-                continue;
-            }
-
-            let minidump = minidump.unwrap();
-            let reports =
-                do_minidump_stackwalk(&minidump_stackwalk.installed, &minidump, &env, &item);
-            if let Err(e) = reports {
-                println!("failed to process test dump! {}", e);
-                test_results.insert(
-                    item,
-                    TestReport {
-                        status: TestStatus::FailedProcess,
-                        dump: Some(minidump),
-                        reports: None,
-                    },
-                );
-                continue;
-            }
-
-            println!("test passed!");
-            let reports = reports.unwrap();
-            test_results.insert(
-                item,
-                TestReport {
-                    status: TestStatus::Passed,
-                    dump: Some(minidump),
-                    reports: Some(reports),
-                },
-            );
-        } else {
-            tests_skipped += 1;
+    for test in suite {
+        let rules = get_test_rules(&test, cli);
+        let mut report = test_results.entry(test.id.clone()).or_insert(TestReport {
+            rules,
+            status: TestStatus::Passed,
+            dump: None,
+            reports: None,
+        });
+        if report.rules.run <= TestRunMode::Skip {
+            report.status = TestStatus::Skipped;
+            continue;
         }
+
+        // Ok run the test
+        let minidump = do_run_app(&app.installed, &env, &test);
+        if let Err(e) = minidump {
+            println!("failed to run test! {}", e);
+            report.status = TestStatus::FailedRun;
+            continue;
+        }
+        report.dump = minidump.ok();
+        let minidump = report.dump.as_ref().unwrap();
+
+        if report.rules.run <= TestRunMode::Run {
+            continue;
+        }
+
+        let reports = do_minidump_stackwalk(&minidump_stackwalk.installed, &minidump, &env, &test);
+        if let Err(e) = reports {
+            println!("failed to process test dump! {}", e);
+            report.status = TestStatus::FailedProcess;
+            continue;
+        }
+
+        println!("test passed!");
+        report.reports = reports.ok();
     }
     println!();
     println!("all tests run!");
     println!();
 
+    let mut tests_skipped = 0;
     let mut tests_run = 0;
     let mut tests_passed = 0;
     let mut tests_failed = 0;
     for (suite, item) in &test_results {
         tests_run += 1;
         print!("{suite:30} ");
-        match item.status {
-            TestStatus::Passed => {
+        match (&item.status, &item.rules.check) {
+            (TestStatus::Skipped, _) => {
+                println!("...skipped!");
+                tests_skipped += 1;
+            }
+            (_, TestCheckMode::Random)
+            | (TestStatus::Passed, TestCheckMode::Pass)
+            | (TestStatus::FailedRun | TestStatus::FailedProcess, TestCheckMode::Fail) => {
                 println!("...passed!");
                 tests_passed += 1;
             }
-            TestStatus::FailedRun => {
+            (TestStatus::FailedRun, TestCheckMode::Busted) => {
+                println!("...failed to run! (known busted, treated as pass)");
+                tests_passed += 1;
+            }
+            (TestStatus::FailedProcess, TestCheckMode::Busted) => {
+                println!("...failed to process dump! (known busted, treated as pass)");
+                tests_passed += 1;
+            }
+            (TestStatus::FailedRun, TestCheckMode::Pass) => {
                 println!("...failed to run!");
                 tests_failed += 1;
             }
-            TestStatus::FailedProcess => {
+            (TestStatus::FailedProcess, TestCheckMode::Pass) => {
                 println!("...failed to process dump!");
+                tests_failed += 1;
+            }
+            (TestStatus::Passed, TestCheckMode::Busted) => {
+                println!("...got fixed (change the expected to 'pass')!");
+                tests_failed += 1;
+            }
+            (TestStatus::Passed, TestCheckMode::Fail) => {
+                println!("...incorrectly passed!");
                 tests_failed += 1;
             }
         }
@@ -316,50 +446,6 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
     } else {
         Ok(())
     }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct FullReport {
-    stats: TestStats,
-    builds: BuildReports,
-    syms: SymReports,
-    tests: BTreeMap<String, TestReport>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct TestStats {
-    tests_run: u32,
-    tests_passed: u32,
-    tests_failed: u32,
-    tests_skipped: u32,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct SymReports {
-    minidumper_test: Utf8PathBuf,
-    crash_client: Utf8PathBuf,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct BuildReports {
-    dump_syms: InstallOutput,
-    minidump_stackwalk: InstallOutput,
-    minidumper_test: InstallOutput,
-    crash_client: InstallOutput,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct TestReport {
-    status: TestStatus,
-    dump: Option<Utf8PathBuf>,
-    reports: Option<MinidumpStackwalkOutput>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-enum TestStatus {
-    Passed,
-    FailedRun,
-    FailedProcess,
 }
 
 fn do_dump_syms(
@@ -410,7 +496,7 @@ fn do_dump_syms(
     Ok(output_path)
 }
 
-fn do_get_suite(app: &Utf8PathBuf) -> Result<Vec<String>, PipelineError> {
+fn do_get_suite(app: &Utf8PathBuf) -> Result<Vec<TestKey>, PipelineError> {
     println!("getting test suite");
     let output = Command::new(app).arg("--list").output()?;
 
@@ -423,10 +509,16 @@ fn do_get_suite(app: &Utf8PathBuf) -> Result<Vec<String>, PipelineError> {
     }
 
     let stdout = String::from_utf8(output.stdout)?;
-    let listing = stdout.lines().map(|s| s.to_owned()).collect();
+    let listing = stdout
+        .lines()
+        .map(|s| TestKey {
+            signal: s.to_owned(),
+            id: s.to_owned(),
+        })
+        .collect::<Vec<_>>();
     println!("got test suite!");
     for item in &listing {
-        println!("  {}", item);
+        println!("  {}", item.id);
     }
     println!();
 
@@ -436,14 +528,14 @@ fn do_get_suite(app: &Utf8PathBuf) -> Result<Vec<String>, PipelineError> {
 fn do_run_app(
     app: &Utf8PathBuf,
     env: &BuildEnv,
-    signal: &str,
+    test: &TestKey,
 ) -> Result<Utf8PathBuf, PipelineError> {
-    println!("running app --signal={signal}");
-    let dump_path = env.dump_dir.join(signal).join("minidump.dmp");
+    println!("running app --signal={}", test.signal);
+    let dump_path = env.dump_dir.join(format!("{}.dmp", test.id));
 
     let mut task = Command::new(app)
         .arg("--signal")
-        .arg(signal)
+        .arg(&test.signal)
         .arg("--dump")
         .arg(&dump_path)
         .spawn()?;
@@ -462,26 +554,16 @@ fn do_run_app(
     Ok(dump_path)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct MinidumpStackwalkOutput {
-    json_report: Utf8PathBuf,
-    human_report: Utf8PathBuf,
-    logs: Utf8PathBuf,
-}
-
 fn do_minidump_stackwalk(
     mdsw: &Utf8PathBuf,
     minidump: &Utf8PathBuf,
     env: &BuildEnv,
-    signal: &str,
+    test: &TestKey,
 ) -> Result<MinidumpStackwalkOutput, PipelineError> {
     println!("running minidump-stackwalk");
-    let report_dir = env.report_dir.join(signal);
-    let json_report = report_dir.join("report.json");
-    let human_report = report_dir.join("report.human.txt");
-    let logs = report_dir.join("report.log.txt");
-
-    std::fs::create_dir_all(report_dir)?;
+    let json_report = env.report_dir.join(format!("{}.json", test.id));
+    let human_report = env.report_dir.join(format!("{}.human.txt", test.id));
+    let logs = env.report_dir.join(format!("{}.log.txt", test.id));
 
     let mut task = Command::new(mdsw)
         .arg("--cyborg")
@@ -665,10 +747,4 @@ fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<InstallOutput, Pip
     }
 
     Err(PipelineError::Other("failed to find binary!".to_string()))
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-struct InstallOutput {
-    installed: Utf8PathBuf,
-    orig_bin_path: Option<Utf8PathBuf>,
 }
