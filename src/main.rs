@@ -33,6 +33,8 @@ struct Cli {
     run: Option<String>,
     #[clap(action, long)]
     suite: Vec<String>,
+    #[clap(action, long)]
+    debugger: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,6 +57,8 @@ struct ConfigFile {
     minidumper_test: Dep,
     #[serde(rename = "crash-client")]
     crash_client: Dep,
+    #[serde(rename = "minidump-debugger")]
+    minidump_debugger: Option<Dep>,
 }
 
 fn default_run_dir() -> String {
@@ -304,8 +308,16 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
     let dump_syms = build("dump_syms", &config.dump_syms, &env)?;
     let minidump_stackwalk = build("minidump-stackwalk", &config.minidump_stackwalk, &env)?;
     let app = build("minidumper-test", &config.minidumper_test, &env)?;
-    let client = build("crash-client", &&config.crash_client, &env)?;
-
+    let client = build("crash-client", &config.crash_client, &env)?;
+    let debugger = if cli.debugger {
+        let dep = config
+            .minidump_debugger
+            .as_ref()
+            .expect("your config doesn't have [minidump-debugger]!");
+        Some(build("minidump-debugger", dep, &env)?)
+    } else {
+        None
+    };
     println!();
     println!("artifacts built!");
     println!();
@@ -355,7 +367,7 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
             continue;
         }
 
-        let reports = do_minidump_stackwalk(&minidump_stackwalk.installed, &minidump, &env, &test);
+        let reports = do_minidump_stackwalk(&minidump_stackwalk.installed, minidump, &env, &test);
         if let Err(e) = reports {
             println!("failed to process test dump! {}", e);
             report.status = TestStatus::FailedProcess;
@@ -447,11 +459,42 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
     println!("full report written to: {}", full_report_path);
     println!();
 
+    if let Some(debugger) = &debugger {
+        do_run_debugger(&debugger.installed, &full_report, &env)?;
+    }
+
     if tests_failed > 0 {
         Err(PipelineError::TestsFailed)
     } else {
         Ok(())
     }
+}
+
+fn do_run_debugger(
+    installed: &Utf8PathBuf,
+    report: &FullReport,
+    env: &BuildEnv,
+) -> Result<(), PipelineError> {
+    let viewable_dumps = report
+        .tests
+        .iter()
+        .filter_map(|(_id, test)| test.dump.as_ref());
+
+    let mut task = Command::new(installed);
+    task.arg("--symbols-path").arg(&env.sym_dir);
+
+    for dump in viewable_dumps {
+        task.arg(dump);
+    }
+
+    let status = task.status()?;
+    if !status.success() {
+        return Err(PipelineError::Other(format!(
+            "failed to run minidump-debugger: {}",
+            status.code().unwrap()
+        )));
+    }
+    Ok(())
 }
 
 fn do_dump_syms(

@@ -11,6 +11,8 @@
 # via path:
 # path = "../rust-minidump/minidump-stackwalk/"
 
+[minidump-debugger]
+path = "../minidump-debugger"
 
 
 
