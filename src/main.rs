@@ -487,6 +487,7 @@ fn do_run_debugger(
         task.arg(dump);
     }
 
+    println!("exec: {:?}", task);
     let status = task.status()?;
     if !status.success() {
         return Err(PipelineError::Other(format!(
@@ -504,7 +505,19 @@ fn do_dump_syms(
 ) -> Result<Utf8PathBuf, PipelineError> {
     println!("running dump_syms on {app}");
 
-    let output = Command::new(dump_syms).arg(app).output()?;
+    let mut command = Command::new(dump_syms);
+    command.arg("--inlines");
+
+    if cfg!(target_os = "macos") {
+        let mut dsym = app.clone();
+        dsym.set_extension("dSYM");
+        command.arg("--type").arg("macho").arg(&dsym).arg(app);
+    } else {
+        command.arg(app);
+    }
+
+    println!("exec: {:?}", command);
+    let output = command.output()?;
 
     let status = output.status;
     if !status.success() {
@@ -547,7 +560,11 @@ fn do_dump_syms(
 
 fn do_get_suite(app: &Utf8PathBuf) -> Result<Vec<TestKey>, PipelineError> {
     println!("getting test suite");
-    let output = Command::new(app).arg("--list").output()?;
+    let mut command = Command::new(app);
+    command.arg("--list");
+
+    println!("exec: {:?}", command);
+    let output = command.output()?;
 
     let status = output.status;
     if !status.success() {
@@ -582,13 +599,15 @@ fn do_run_app(
     println!("running app --signal={}", test.signal);
     let dump_path = env.dump_dir.join(format!("{}.dmp", test.id));
 
-    let mut task = Command::new(app)
+    let mut command = Command::new(app);
+    command
         .arg("--signal")
         .arg(&test.signal)
         .arg("--dump")
-        .arg(&dump_path)
-        .spawn()?;
+        .arg(&dump_path);
 
+    println!("exec: {:?}", command);
+    let mut task = command.spawn()?;
     let status = task.wait()?;
     if !status.success() {
         return Err(PipelineError::Other(format!(
@@ -614,7 +633,8 @@ fn do_minidump_stackwalk(
     let human_report = env.report_dir.join(format!("{}.human.txt", test.id));
     let logs = env.report_dir.join(format!("{}.log.txt", test.id));
 
-    let mut task = Command::new(mdsw)
+    let mut command = Command::new(mdsw);
+    command
         .arg("--cyborg")
         .arg(&json_report)
         .arg("--output-file")
@@ -625,9 +645,10 @@ fn do_minidump_stackwalk(
         .arg("--symbols-path")
         .arg(&env.sym_dir)
         .arg("--pretty")
-        .arg(minidump)
-        .spawn()?;
+        .arg(minidump);
 
+    println!("exec: {:?}", command);
+    let mut task = command.spawn()?;
     let status = task.wait()?;
     if !status.success() {
         return Err(PipelineError::Other(format!(
@@ -671,6 +692,21 @@ fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<InstallOutput, Pip
             .arg(to_build);
     }
 
+    if dep.force_build {
+        // Get ALL that debuginfo, we're building for dumpsyms!
+        let mut rustflags = String::new();
+
+        // Make sure we get debuginfo
+        rustflags.push_str(" -Cdebuginfo=2");
+
+        // Macos wants us to emit a dSYM for dumpsyms
+        if cfg!(target_os = "macos") {
+            rustflags.push_str(" -Csplit-debuginfo=packed");
+        }
+
+        command.env("RUSTFLAGS", rustflags);
+    }
+
     match &dep.kind {
         DepKind::Crates(dep) => {
             if let Some(version) = &dep.version {
@@ -712,10 +748,12 @@ fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<InstallOutput, Pip
         command.arg("--no-default-features");
     }
 
-    let mut task = command
+    command
         .arg("--message-format=json")
-        .stdout(std::process::Stdio::piped())
-        .spawn()?;
+        .stdout(std::process::Stdio::piped());
+
+    println!("exec: {:?}", command);
+    let mut task = command.spawn()?;
 
     let mut orig_bin_path = None;
     let reader = std::io::BufReader::new(task.stdout.take().unwrap());
@@ -743,12 +781,15 @@ fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<InstallOutput, Pip
     if is_install {
         // We need to slurp the binaries out of --list
         // and then copy them back to the build dir
-        let output = Command::new("cargo")
+        let mut command = Command::new("cargo");
+        command
             .arg("install")
             .arg("--list")
             .arg("--root")
-            .arg(&env.install_dir)
-            .output()?;
+            .arg(&env.install_dir);
+
+        println!("exec: {:?}", command);
+        let output = command.output()?;
 
         let messages = String::from_utf8(output.stdout)?;
         let mut lines = messages.lines().peekable();
