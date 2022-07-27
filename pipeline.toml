@@ -24,16 +24,19 @@
 
 
 [minidump-stackwalk]
-# git = "https://github.com/rust-minidump/rust-minidump"
+git = "https://github.com/Gankra/rust-minidump"
+branch = "inline"
 # path = "../rust-minidump/minidump-stackwalk/"
 
 # optional! (only used when you pass --debugger)
 [minidump-debugger]
-# git = "https://github.com/Gankra/minidump-debugger"
+git = "https://github.com/Gankra/minidump-debugger"
+branch = "inline"
 # path = "../minidump-debugger/"
 
 [dump_syms]
-# git = "https://github.com/mozilla/dump_syms"
+git = "https://github.com/mozilla/dump_syms"
+rev = "54f9e6240e34cf17fc7dc60ac4985772e2c20001"
 # path = "../dump_syms/"
 
 
