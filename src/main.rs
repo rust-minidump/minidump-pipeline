@@ -35,6 +35,8 @@ struct Cli {
     suite: Vec<String>,
     #[clap(action, long)]
     debugger: bool,
+    #[clap(action, long)]
+    inlines: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -328,6 +330,7 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
             .as_ref()
             .expect("app must be rebuilt for dump_syms!"),
         &env,
+        cli.inlines,
     )?;
     let client_sym = do_dump_syms(
         &dump_syms.installed,
@@ -336,6 +339,7 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
             .as_ref()
             .expect("crash-client must be rebuilt for dump_syms!"),
         &env,
+        cli.inlines,
     )?;
     let suite = do_get_suite(&app.installed)?;
 
@@ -502,11 +506,14 @@ fn do_dump_syms(
     dump_syms: &Utf8PathBuf,
     app: &Utf8PathBuf,
     env: &BuildEnv,
+    enable_inlines: bool,
 ) -> Result<Utf8PathBuf, PipelineError> {
     println!("running dump_syms on {app}");
 
     let mut command = Command::new(dump_syms);
-    command.arg("--inlines");
+    if enable_inlines {
+        command.arg("--inlines");
+    }
 
     if cfg!(target_os = "macos") {
         let mut dsym = app.clone();
