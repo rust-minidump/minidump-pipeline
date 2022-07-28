@@ -41,6 +41,14 @@ struct Cli {
 
 #[derive(Debug, Clone, Deserialize)]
 struct ConfigFile {
+    /// Whether to pass --inlines to dump_syms (cli flag overrides this)
+    inlines: Option<bool>,
+
+    /// What custom `-Csymbol-mangling-version` should be passed to rustc
+    #[serde(rename = "rust-mangling")]
+    rust_mangling: Option<String>,
+
+    // Various dirs
     #[serde(default = "default_run_dir")]
     run_dir: String,
     #[serde(default = "default_install_dir")]
@@ -52,6 +60,7 @@ struct ConfigFile {
     #[serde(default = "default_report_dir")]
     report_dir: String,
 
+    // Various deps
     #[serde(rename = "minidump-stackwalk")]
     minidump_stackwalk: Dep,
     dump_syms: Dep,
@@ -131,6 +140,7 @@ struct BuildEnv {
     dump_dir: Utf8PathBuf,
     report_dir: Utf8PathBuf,
     run_dir: Utf8PathBuf,
+    rust_mangling: Option<String>,
 }
 
 /////////////////////////////////////////////////////////
@@ -293,6 +303,7 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
         report_dir: run_dir.join(&config.report_dir),
         run_dir,
         _root_dir: root_dir,
+        rust_mangling: config.rust_mangling.clone(),
     };
 
     if env.run_dir.exists() {
@@ -324,13 +335,15 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
     println!("artifacts built!");
     println!();
 
+    let default_inlines = false;
+    let inlines = config.inlines.unwrap_or(default_inlines) || cli.inlines;
     let app_sym = do_dump_syms(
         &dump_syms.installed,
         app.orig_bin_path
             .as_ref()
             .expect("app must be rebuilt for dump_syms!"),
         &env,
-        cli.inlines,
+        inlines,
     )?;
     let client_sym = do_dump_syms(
         &dump_syms.installed,
@@ -339,7 +352,7 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
             .as_ref()
             .expect("crash-client must be rebuilt for dump_syms!"),
         &env,
-        cli.inlines,
+        inlines,
     )?;
     let suite = do_get_suite(&app.installed)?;
 
@@ -709,6 +722,10 @@ fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<InstallOutput, Pip
         // Macos wants us to emit a dSYM for dumpsyms
         if cfg!(target_os = "macos") {
             rustflags.push_str(" -Csplit-debuginfo=packed");
+        }
+        if let Some(rust_mangling) = &env.rust_mangling {
+            use std::fmt::Write;
+            write!(rustflags, " -Csymbol-mangling-version={}", rust_mangling).unwrap();
         }
 
         command.env("RUSTFLAGS", rustflags);

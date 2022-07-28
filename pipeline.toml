@@ -4,7 +4,8 @@
 # These files are basically Cargo.toml dependencies, that minidump-pipeline
 # will use to fetch binaries, either with `cargo install` or `cargo build`.
 
-
+inlines = true
+rust-mangling = "v0"
 
 # [my-example-dep]
 # # via crates.io (the default, if version not specified, uses latest):
@@ -30,6 +31,7 @@ branch = "inline"
 
 # optional! (only used when you pass --debugger)
 [minidump-debugger]
+features = ["inline"]
 git = "https://github.com/Gankra/minidump-debugger"
 branch = "inline"
 # path = "../minidump-debugger/"
