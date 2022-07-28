@@ -4,7 +4,7 @@
 # These files are basically Cargo.toml dependencies, that minidump-pipeline
 # will use to fetch binaries, either with `cargo install` or `cargo build`.
 
-inlines = true
+# inlines = true
 rust-mangling = "v0"
 
 # [my-example-dep]
@@ -25,20 +25,13 @@ rust-mangling = "v0"
 
 
 [minidump-stackwalk]
-git = "https://github.com/Gankra/rust-minidump"
-branch = "inline"
 # path = "../rust-minidump/minidump-stackwalk/"
 
 # optional! (only used when you pass --debugger)
 [minidump-debugger]
-features = ["inline"]
-git = "https://github.com/Gankra/minidump-debugger"
-branch = "inline"
 # path = "../minidump-debugger/"
 
 [dump_syms]
-git = "https://github.com/mozilla/dump_syms"
-rev = "54f9e6240e34cf17fc7dc60ac4985772e2c20001"
 # path = "../dump_syms/"
 
 
