@@ -1,27 +1,7 @@
-# Pipeline files are passed via --config to minidump-pipeline,
-# with `pipeline.toml` being the implicit default one.
-#
-# These files are basically Cargo.toml dependencies, that minidump-pipeline
-# will use to fetch binaries, either with `cargo install` or `cargo build`.
+# A config for testing the inlining feature
 
 inlines = true
 rust-mangling = "v0"
-
-
-# [my-example-dep]
-# # via crates.io (the default, if version not specified, uses latest):
-# version = "1.0.1"
-#
-#
-# # via git (only `git` is required)
-# git = "https://github.com/rust-minidump/rust-minidump"
-# branch = "mybranch"
-# rev = "a525b3fe40495680a5c4984f8d1223963583f894"
-# tag = "0.11.0"
-#
-#
-# # via path (will use cargo build to avoid excessive rebuilds)
-# path = "../rust-minidump/minidump-stackwalk
 
 
 
@@ -48,7 +28,6 @@ rev = "54f9e6240e34cf17fc7dc60ac4985772e2c20001"
 # and we need to force_build because we want their symbols!
 
 [minidumper-test]
-force_build = true
 git = "https://github.com/EmbarkStudios/crash-handling"
 # path = "../crash-handling/minidumper-test"
 

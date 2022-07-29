@@ -19,7 +19,6 @@ path = "../dump_syms/"
 # and we need to force_build because we want their symbols!
 
 [minidumper-test]
-force_build = true
 git = "https://github.com/EmbarkStudios/crash-handling"
 path = "../crash-handling/minidumper-test"
 

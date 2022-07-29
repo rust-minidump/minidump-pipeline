@@ -9,6 +9,36 @@ use thiserror::Error;
 /// Configuration
 ////////////////////////////////////////////////////////
 
+// Feel free to edit this on feature branches to streamline things
+const DEFAULT_CONFIG: &str = "pipeline.toml";
+
+/// These are the builtin test-expectations, edit these if there are new rules!
+fn get_test_rules(test: &TestKey, cli: &Cli) -> TestRules {
+    use TestCheckMode::*;
+    use TestRunMode::*;
+
+    // By default, require tests to run completely and pass
+    let mut result = TestRules {
+        run: Process,
+        check: Pass,
+    };
+
+    // If the cli has test filters, apply those
+    if !cli.suite.is_empty() && !cli.suite.contains(&test.id) {
+        result.run = Skip;
+        return result;
+    }
+
+    // Now apply specific custom expectations for platforms/suites
+
+    // This test doesn't work on these platforms, haven't looked into it
+    if cfg!(any(target_os = "windows", target_os = "macos")) && test.signal == "stack-overflow-c-thread" {
+        result.check = Busted;
+    }
+    result
+}
+
+
 #[derive(Diagnostic, Debug, Error)]
 enum PipelineError {
     #[error(transparent)]
@@ -49,6 +79,8 @@ struct ConfigFile {
     rust_mangling: Option<String>,
 
     // Various dirs
+    #[serde(default = "default_build_dir")]
+    build_dir: String,
     #[serde(default = "default_run_dir")]
     run_dir: String,
     #[serde(default = "default_install_dir")]
@@ -70,13 +102,20 @@ struct ConfigFile {
     crash_client: Dep,
     #[serde(rename = "minidump-debugger")]
     minidump_debugger: Option<Dep>,
+
+    /// Set by code, don't put this in the file
+    #[serde(default)]
+    name: String,
 }
 
 fn default_run_dir() -> String {
     "runs".to_string()
 }
+fn default_build_dir() -> String {
+    "build".to_string()
+}
 fn default_install_dir() -> String {
-    "bin".to_string()
+    "install".to_string()
 }
 fn default_dump_dir() -> String {
     "dumps".to_string()
@@ -165,7 +204,6 @@ struct TestStats {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct SymReports {
-    minidumper_test: Utf8PathBuf,
     crash_client: Utf8PathBuf,
 }
 
@@ -235,27 +273,6 @@ struct InstallOutput {
     orig_bin_path: Option<Utf8PathBuf>,
 }
 
-fn get_test_rules(test: &TestKey, cli: &Cli) -> TestRules {
-    use TestCheckMode::*;
-    use TestRunMode::*;
-
-    let mut result = TestRules {
-        run: Process,
-        check: Pass,
-    };
-    if !cli.suite.is_empty() && !cli.suite.contains(&test.id) {
-        result.run = Skip;
-        return result;
-    }
-
-    if cfg!(target_os = "windows") || cfg!(target_os = "macos") {
-        if test.signal == "stack-overflow-c-thread" {
-            result.check = Busted;
-        }
-    }
-    result
-}
-
 fn main() -> Result<(), miette::Report> {
     let cli = parse_cli();
     let config = parse_config(&cli)?;
@@ -274,12 +291,17 @@ fn parse_config(cli: &Cli) -> Result<ConfigFile, PipelineError> {
     let config_path = cli
         .config
         .to_owned()
-        .unwrap_or_else(|| PathBuf::from("pipeline.toml"));
-    let file = File::open(config_path)?;
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG));
+    let file = File::open(&config_path)?;
     let mut buf = std::io::BufReader::new(file);
     let mut bytes = Vec::new();
     buf.read_to_end(&mut bytes)?;
-    let config = toml::from_slice(&bytes)?;
+    let mut config: ConfigFile = toml::from_slice(&bytes)?;
+    config.name = config_path
+        .file_stem()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
 
     println!("config parsed!");
     println!();
@@ -287,17 +309,24 @@ fn parse_config(cli: &Cli) -> Result<ConfigFile, PipelineError> {
     Ok(config)
 }
 
+/// Run through the full pipeline:
+/// 
+/// * Stage 1: build
+/// * Stage 2: dump_syms
+/// * Stage 3: run + crash
+/// * Stage 4: minidump-stackalk
+/// * Stage 5: view
 fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
+    // Stage 0: Figure out where we're going to put stuff, and clean up
     let root_dir = Utf8PathBuf::from_path_buf(std::env::current_dir()?)
         .map_err(|_| PipelineError::Other("current dir isn't utf8?".to_owned()))?;
-    let run_name = cli.run.clone().unwrap_or_else(|| "run".to_owned());
+    let run_name = cli.run.clone().unwrap_or_else(|| config.name.clone());
     let run_dir = root_dir.join(&config.run_dir).join(run_name);
 
     let env = BuildEnv {
-        install_dir: root_dir.join(&config.install_dir),
-        real_install_dir: root_dir.join(&config.install_dir).join("bin"),
-        // This duplication is currently intentional, not sure if this decoupling is useful
-        build_dir: root_dir.join(&config.install_dir),
+        install_dir: run_dir.join(&config.install_dir),
+        real_install_dir: run_dir.join(&config.install_dir).join("bin"),
+        build_dir: run_dir.join(&config.build_dir),
         sym_dir: run_dir.join(&config.sym_dir),
         dump_dir: run_dir.join(&config.dump_dir),
         report_dir: run_dir.join(&config.report_dir),
@@ -306,18 +335,9 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
         rust_mangling: config.rust_mangling.clone(),
     };
 
-    if env.run_dir.exists() {
-        std::fs::remove_dir_all(&env.run_dir)?;
-    }
+    prep_run_dir(&env)?;
 
-    std::fs::create_dir_all(&env.install_dir)?;
-    std::fs::create_dir_all(&env.real_install_dir)?;
-    std::fs::create_dir_all(&env.build_dir)?;
-    std::fs::create_dir_all(&env.run_dir)?;
-    std::fs::create_dir_all(&env.sym_dir)?;
-    std::fs::create_dir_all(&env.dump_dir)?;
-    std::fs::create_dir_all(&env.report_dir)?;
-
+    // Stage 1: Build/install everything we need
     let dump_syms = build("dump_syms", &config.dump_syms, &env)?;
     let minidump_stackwalk = build("minidump-stackwalk", &config.minidump_stackwalk, &env)?;
     let app = build("minidumper-test", &config.minidumper_test, &env)?;
@@ -335,27 +355,84 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
     println!("artifacts built!");
     println!();
 
+    // Stage 2: Get symbols for the crashing binary with dump_syms
     let default_inlines = false;
     let inlines = config.inlines.unwrap_or(default_inlines) || cli.inlines;
-    let app_sym = do_dump_syms(
-        &dump_syms.installed,
-        app.orig_bin_path
-            .as_ref()
-            .expect("app must be rebuilt for dump_syms!"),
-        &env,
-        inlines,
-    )?;
-    let client_sym = do_dump_syms(
-        &dump_syms.installed,
-        client
-            .orig_bin_path
-            .as_ref()
-            .expect("crash-client must be rebuilt for dump_syms!"),
-        &env,
-        inlines,
-    )?;
-    let suite = do_get_suite(&app.installed)?;
+    let client_path = client
+        .orig_bin_path
+        .as_ref()
+        .expect("crash-client must be rebuilt for dump_syms!");
+    let client_sym = do_dump_syms(&dump_syms.installed, client_path, &env, inlines)?;
 
+    // Stage 3 + Stage 4: Run the suite and get a report
+    let suite = do_get_suite(&app.installed)?;
+    let full_report = do_run_tests(
+        suite,
+        &cli,
+        &env,
+        dump_syms,
+        app,
+        client,
+        minidump_stackwalk,
+        client_sym,
+    )?;
+
+    // Stage 5: Optionally launch the debugger
+    if let Some(debugger) = &debugger {
+        do_run_debugger(&debugger.installed, &full_report, &env)?;
+    }
+
+    // Set non-zero status if need be
+    if full_report.stats.tests_failed > 0 {
+        Err(PipelineError::TestsFailed)
+    } else {
+        Ok(())
+    }
+}
+
+/// Stage 0: Delete everything but build/install in the runs/$RUN dir, then recreate the dirs we'll use.
+fn prep_run_dir(env: &BuildEnv) -> Result<(), PipelineError> {
+    if env.run_dir.exists() {
+        let build_dir_name = env.build_dir.file_name().unwrap();
+        let install_dir_name = env.install_dir.file_name().unwrap();
+
+        for item in std::fs::read_dir(&env.run_dir)? {
+            let item = item?;
+            let raw_item_name = item.file_name();
+            let item_name = raw_item_name.to_string_lossy();
+            if item_name != build_dir_name && item_name != install_dir_name {
+                let item_type = item.file_type()?;
+                if item_type.is_dir() {
+                    std::fs::remove_dir_all(&item.path())?;
+                } else if item_type.is_file() {
+                    std::fs::remove_file(&item.path())?;
+                }
+            }
+        }
+    }
+
+    std::fs::create_dir_all(&env.install_dir)?;
+    std::fs::create_dir_all(&env.real_install_dir)?;
+    std::fs::create_dir_all(&env.build_dir)?;
+    std::fs::create_dir_all(&env.run_dir)?;
+    std::fs::create_dir_all(&env.sym_dir)?;
+    std::fs::create_dir_all(&env.dump_dir)?;
+    std::fs::create_dir_all(&env.report_dir)?;
+
+    Ok(())
+}
+
+/// Stage 3+4: Run the crashing app and then run minidump-stackwalk on it
+fn do_run_tests(
+    suite: Vec<TestKey>,
+    cli: &Cli,
+    env: &BuildEnv,
+    dump_syms: InstallOutput,
+    app: InstallOutput,
+    client: InstallOutput,
+    minidump_stackwalk: InstallOutput,
+    client_sym: Utf8PathBuf,
+) -> Result<FullReport, PipelineError> {
     let mut test_results = BTreeMap::new();
     for test in suite {
         let rules = get_test_rules(&test, cli);
@@ -463,7 +540,6 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
             crash_client: client,
         },
         syms: SymReports {
-            minidumper_test: app_sym,
             crash_client: client_sym,
         },
         tests: test_results,
@@ -476,17 +552,10 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
     println!("full report written to: {}", full_report_path);
     println!();
 
-    if let Some(debugger) = &debugger {
-        do_run_debugger(&debugger.installed, &full_report, &env)?;
-    }
-
-    if tests_failed > 0 {
-        Err(PipelineError::TestsFailed)
-    } else {
-        Ok(())
-    }
+    Ok(full_report)
 }
 
+/// Stage 5: launch the debugger on the test outputs
 fn do_run_debugger(
     installed: &Utf8PathBuf,
     report: &FullReport,
@@ -515,6 +584,7 @@ fn do_run_debugger(
     Ok(())
 }
 
+/// Stage 2: Run dump_syms on the crashing app's build dir to get symbols
 fn do_dump_syms(
     dump_syms: &Utf8PathBuf,
     app: &Utf8PathBuf,
@@ -524,11 +594,14 @@ fn do_dump_syms(
     println!("running dump_syms on {app}");
 
     let mut command = Command::new(dump_syms);
+
+    // Optionally emit the (enormous) inlinee info
     if enable_inlines {
         command.arg("--inlines");
     }
 
     if cfg!(target_os = "macos") {
+        // On macos we need to really hold dump_sym's hand to get most debuginfo
         let mut dsym = app.clone();
         dsym.set_extension("dSYM");
         command.arg("--type").arg("macho").arg(&dsym).arg(app);
@@ -547,6 +620,9 @@ fn do_dump_syms(
         )));
     }
 
+    // Slightly parse the file to get the debug_id and debug_file we need for the sym's path.
+
+    // Format:
     // MODULE windows x86_64 B71B2A53A4B14BD8B8E60F85DB4AEA1C1 futility.pdb
     // INFO CODE_ID 62DEAF13A3000 futility.exe
     let sym_file = String::from_utf8(output.stdout)?;
@@ -559,6 +635,7 @@ fn do_dump_syms(
     let debug_id = module_items.next().unwrap();
     let debug_file = module_items.next().unwrap();
 
+    // syms/DEBUG_FILE.ext/DEBUG_ID/DEBUG_FILE.sym
     let output_dir = env.sym_dir.join(debug_file).join(debug_id);
     let mut output_path = output_dir.join(debug_file);
     output_path.set_extension("sym");
@@ -578,6 +655,7 @@ fn do_dump_syms(
     Ok(output_path)
 }
 
+/// Get the test-suite from the crashing app
 fn do_get_suite(app: &Utf8PathBuf) -> Result<Vec<TestKey>, PipelineError> {
     println!("getting test suite");
     let mut command = Command::new(app);
@@ -611,6 +689,7 @@ fn do_get_suite(app: &Utf8PathBuf) -> Result<Vec<TestKey>, PipelineError> {
     Ok(listing)
 }
 
+/// Stage 3: run the app and crash, producing a .dmp
 fn do_run_app(
     app: &Utf8PathBuf,
     env: &BuildEnv,
@@ -642,6 +721,7 @@ fn do_run_app(
     Ok(dump_path)
 }
 
+/// Stage 4: process the minidump with symbols from Stage 2
 fn do_minidump_stackwalk(
     mdsw: &Utf8PathBuf,
     minidump: &Utf8PathBuf,
@@ -687,6 +767,7 @@ fn do_minidump_stackwalk(
     Ok(output)
 }
 
+/// Stage 1: build+install a binary
 fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<InstallOutput, PipelineError> {
     let mut command = Command::new("cargo");
     println!("installing {}...", to_build);

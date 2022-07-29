@@ -1,21 +1,18 @@
-# A config that fetches everything from git
+# A config with the old (non-v0) mangling
 
 # inlines = true
-rust-mangling = "v0"
+# rust-mangling = "v0"
 
 
 
 [minidump-stackwalk]
-git = "https://github.com/rust-minidump/rust-minidump"
 # path = "../rust-minidump/minidump-stackwalk/"
 
 # optional! (only used when you pass --debugger)
 [minidump-debugger]
-git = "https://github.com/Gankra/minidump-debugger"
 # path = "../minidump-debugger/"
 
 [dump_syms]
-git = "https://github.com/mozilla/dump_syms"
 # path = "../dump_syms/"
 
 
