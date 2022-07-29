@@ -32,12 +32,13 @@ fn get_test_rules(test: &TestKey, cli: &Cli) -> TestRules {
     // Now apply specific custom expectations for platforms/suites
 
     // This test doesn't work on these platforms, haven't looked into it
-    if cfg!(any(target_os = "windows", target_os = "macos")) && test.signal == "stack-overflow-c-thread" {
+    if cfg!(any(target_os = "windows", target_os = "macos"))
+        && test.signal == "stack-overflow-c-thread"
+    {
         result.check = Busted;
     }
     result
 }
-
 
 #[derive(Diagnostic, Debug, Error)]
 enum PipelineError {
@@ -310,7 +311,7 @@ fn parse_config(cli: &Cli) -> Result<ConfigFile, PipelineError> {
 }
 
 /// Run through the full pipeline:
-/// 
+///
 /// * Stage 1: build
 /// * Stage 2: dump_syms
 /// * Stage 3: run + crash
@@ -368,7 +369,7 @@ fn do_pipeline(cli: &Cli, config: &ConfigFile) -> Result<(), PipelineError> {
     let suite = do_get_suite(&app.installed)?;
     let full_report = do_run_tests(
         suite,
-        &cli,
+        cli,
         &env,
         dump_syms,
         app,
@@ -423,6 +424,7 @@ fn prep_run_dir(env: &BuildEnv) -> Result<(), PipelineError> {
 }
 
 /// Stage 3+4: Run the crashing app and then run minidump-stackwalk on it
+#[allow(clippy::too_many_arguments)]
 fn do_run_tests(
     suite: Vec<TestKey>,
     cli: &Cli,
@@ -448,7 +450,7 @@ fn do_run_tests(
         }
 
         // Ok run the test
-        let minidump = do_run_app(&app.installed, &env, &test);
+        let minidump = do_run_app(&app.installed, env, &test);
         if let Err(e) = minidump {
             println!("failed to run test! {}", e);
             report.status = TestStatus::FailedRun;
@@ -461,7 +463,7 @@ fn do_run_tests(
             continue;
         }
 
-        let reports = do_minidump_stackwalk(&minidump_stackwalk.installed, minidump, &env, &test);
+        let reports = do_minidump_stackwalk(&minidump_stackwalk.installed, minidump, env, &test);
         if let Err(e) = reports {
             println!("failed to process test dump! {}", e);
             report.status = TestStatus::FailedProcess;
@@ -773,6 +775,7 @@ fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<InstallOutput, Pip
     println!("installing {}...", to_build);
 
     let is_install = !matches!(dep.kind, DepKind::Path(_));
+    let needs_force = matches!(dep.kind, DepKind::Git(_)) || dep.force_build;
 
     if is_install {
         command
@@ -782,7 +785,7 @@ fn build(to_build: &str, dep: &Dep, env: &BuildEnv) -> Result<InstallOutput, Pip
             .arg(&env.install_dir)
             .arg("--target-dir")
             .arg(&env.build_dir);
-        if dep.force_build {
+        if needs_force {
             command.arg("--force");
         }
     } else {
