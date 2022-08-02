@@ -27,7 +27,7 @@ When you `cargo run` this repo, it will:
 * for each crash suite item:
   * run the app (via `minidumper-test`), which will crash, and produce a minidump with `minidumper`
   * process the minidump with `minidump-stackwalk`, producing reports and logs
-* compare the results against expectations
+* compare the results against expectations (just run-pass kind of checking, no assertions yet on the final output's contents)
 * emit a big full-report.json linking all the intermediate artifacts and results
 * set non-zero status if any tests unexpectedly failed
 
@@ -44,6 +44,8 @@ If the tool runs successfully, then under `runs/$RUN_NAME` you will find:
 * `syms/` containing the .syms emitted by dump_syms
 * `dumps/` containing the .dmps emitted by minidumper
 * `reports/` containing the processed crash reports (and logs) emitted by minidump-stackwalk
+* `build/` containing the raw build dir
+* `install/` containing the final binaries
 
 If you do two different runs with different RUN_NAMEs, then you can theoretically
 diff the results to compare how two different toolchains work.
