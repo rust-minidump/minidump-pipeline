@@ -10,7 +10,7 @@ use thiserror::Error;
 ////////////////////////////////////////////////////////
 
 // Feel free to edit this on feature branches to streamline things
-const DEFAULT_CONFIG: &str = "pipeline.toml";
+const DEFAULT_CONFIG: &str = "pipeline-inlines.toml";
 
 /// These are the builtin test-expectations, edit these if there are new rules!
 fn get_test_rules(test: &TestKey, cli: &Cli) -> TestRules {
